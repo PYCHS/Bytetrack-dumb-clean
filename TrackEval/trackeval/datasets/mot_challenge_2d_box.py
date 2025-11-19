@@ -33,7 +33,7 @@ class MotChallenge2DBox(_BaseDataset):
             'SEQMAP_FOLDER': None,  # Where seqmaps are found (if None, GT_FOLDER/seqmaps)
             'SEQMAP_FILE': None,  # Directly specify seqmap file (if none use seqmap_folder/benchmark-split_to_eval)
             'SEQ_INFO': None,  # If not None, directly specify sequences to eval and their number of timesteps
-            'GT_LOC_FORMAT': '{gt_folder}/{seq}/gt/gt.txt',  # '{gt_folder}/{seq}/gt/gt.txt'
+            'GT_LOC_FORMAT': '{gt_folder}/{video_id}/{expression_id}/gt.txt',
             'SKIP_SPLIT_FOL': False,  # If False, data is in GT_FOLDER/BENCHMARK-SPLIT_TO_EVAL/ and in
                                       # TRACKERS_FOLDER/BENCHMARK-SPLIT_TO_EVAL/tracker/
                                       # If True, then the middle 'benchmark-split' folder is skipped for both.
@@ -90,7 +90,7 @@ class MotChallenge2DBox(_BaseDataset):
             if not self.data_is_zipped:
                 # curr_file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.gt_fol, seq=seq)
                 # gt has been saved into the same folder with prediction
-                curr_file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.tracker_fol, video_id=seq.split('+')[0],
+                curr_file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.gt_fol, video_id=seq.split('+')[0],
                                                                 expression_id=seq.split('+')[1])
                 if not os.path.isfile(curr_file):
                     print('GT file not found ' + curr_file)
@@ -211,7 +211,7 @@ class MotChallenge2DBox(_BaseDataset):
             zip_file = None
             if is_gt:
                 # file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.gt_fol, seq=seq)
-                file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.tracker_fol, video_id=seq.split('+')[0],
+                file = self.config["GT_LOC_FORMAT"].format(gt_folder=self.gt_fol, video_id=seq.split('+')[0],
                                                            expression_id=seq.split('+')[1])
             else:
                 # file = os.path.join(self.tracker_fol, tracker, self.tracker_sub_fol, seq + '.txt')

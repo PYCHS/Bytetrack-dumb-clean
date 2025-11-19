@@ -15,10 +15,10 @@ python3 run_mot_challenge.py \
 --METRICS HOTA \
 --SEQMAP_FILE /home/seanachan/ByteTrack_LLM_dumb/datasets/data_path/seqmap-v1.txt \
 --SKIP_SPLIT_FOL True \
---GT_FOLDER /home/seanachan/data/Dataset/refer-kitti/KITTI/labels_with_ids/image_02 \
---TRACKERS_FOLDER /home/seanachan/ByteTrack_LLM_dumb//exps/bytetrack/results_epoch52 \
+--GT_FOLDER /home/seanachan/ByteTrack_ultralytics/exps/results_1 \
+--TRACKERS_FOLDER /home/seanachan/ByteTrack_ultralytics/exps/results_1 \
 --GT_LOC_FORMAT {gt_folder}{video_id}/{expression_id}/gt.txt \
---TRACKERS_TO_EVAL /home/seanachan/ByteTrack_LLM_dumb/exps/bytetrack/results_epoch52 \
+--TRACKERS_TO_EVAL /home/seanachan/ByteTrack_ultralytics/exps/results_1 \
 --USE_PARALLEL True \
 --NUM_PARALLEL_CORES 2 \
 --SKIP_SPLIT_FOL True \
