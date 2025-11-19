@@ -13,14 +13,14 @@ API_URL = "http://localhost:11434/api/generate"
 
 def encode_image(path, min_size=224):
     """Encode image to base64, resizing if too small for vision model.
-    
+
     Args:
         path: Path to image file
         min_size: Minimum dimension size (default 224 for vision models)
     """
     img = Image.open(path)
     width, height = img.size
- 
+
     # Resize if either dimension is too small
     if width < min_size or height < min_size:
         # Calculate new size maintaining aspect ratio
@@ -30,12 +30,12 @@ def encode_image(path, min_size=224):
         else:
             new_height = min_size
             new_width = int(width * (min_size / height))
-        
+
         img = img.resize((new_width, new_height), Image.LANCZOS)
-    
+
     # Convert to bytes
     buffer = io.BytesIO()
-    img.save(buffer, format=img.format or 'JPEG')
+    img.save(buffer, format=img.format or "JPEG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -54,7 +54,14 @@ def sort_key(x):
     return (frame_id, person_id)
 
 
-def select_targets(crops_dir, prompt, threshold=0.30, device="cpu", quiet=False):
+def select_targets(
+    crops_dir,
+    prompt,
+    device="cpu",
+    quiet=False,
+    img_size={"img_h": 375, "img_w": 1242},
+    crop_info=None,
+):
     """Select target IDs from cropped images using LLM.
 
     Args:
@@ -92,11 +99,39 @@ def select_targets(crops_dir, prompt, threshold=0.30, device="cpu", quiet=False)
         if not quiet:
             print(f"[INFO] ({idx}/{len(files)}) Processing {fname}")
 
+        crop = None
+        bbox = None
+        if crop_info:
+            for crop_item in crop_info:
+                print(crop_item)
+                if crop_item.tracker_id == person_id and crop_item.frame_id == frame_id:
+                    crop = crop_item
+                    break
+
+        if crop and hasattr(crop, "bbox"):
+            bbox = crop.bbox
+
+        if bbox:
+            # Assume it's an object with attributes
+            crop_details = (
+                f"the position of this crop in the original image is (x1: {bbox.x1}, y1: {bbox.y1}, "
+                f"x2: {bbox.x2}, y2: {bbox.y2}). "
+            )
+        else:
+            crop_details = ""
+        print(crop_details)
+
         payload = {
-            "model": "qwen2.5vl",
-            "prompt": f"{prompt}\n \
-            Confirm whether it meets the requirements. \
-            If yes, answer 'yes'. If not, answer 'no'.",
+            "model": "qwen3-vl",
+            "prompt": (
+                f"The size of the original image is height: {img_size['img_h']}, "
+                f"width: {img_size['img_w']}, "
+                f"I will attach a cropped image from this image to you"
+                f"{crop_details}\n\n"
+                f"{prompt}\n"
+                "Confirm whether it meets the requirement. "
+                "If yes, answer 'yes'. If not, answer 'no'."
+            ),
             "images": [encode_image(f)],
         }
 
