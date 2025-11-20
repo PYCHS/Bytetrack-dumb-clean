@@ -116,48 +116,35 @@ def select_targets(
         # print(f"bbox: {bbox}")
 
         if bbox:
-            # Calculate relative position and center
-            center_x = (bbox["x1"] + bbox["x2"]) / 2
-            center_y = (bbox["y1"] + bbox["y2"]) / 2
-            rel_x = center_x / img_size["img_w"]
-            rel_y = center_y / img_size["img_h"]
-
-            # Determine position in image
-            if rel_x < 0.33:
-                horizontal_pos = "left side"
-            elif rel_x < 0.67:
-                horizontal_pos = "center"
+            # Calculate relative position
+            center_x = (bbox['x1'] + bbox['x2']) / 2
+            center_y = (bbox['y1'] + bbox['y2']) / 2
+            rel_x = center_x / img_size['img_w']  # 0.0 = leftmost, 1.0 = rightmost
+            
+            # Determine horizontal position - be more strict about "left"
+            if rel_x < 0.35:
+                position_desc = "on the left side of the road"
+            elif rel_x > 0.65:
+                position_desc = "on the right side of the road"
             else:
-                horizontal_pos = "right side"
-
+                position_desc = "in the center or directly ahead"
+            
             crop_details = (
-                f"This cropped object is located at the {horizontal_pos} of the original image.\n"
-                f"Detailed position: Center at ({center_x:.1f}, {center_y:.1f}), "
-                f"relative position: {rel_x*100:.1f}% from left, {rel_y*100:.1f}% from top.\n"
-                f"Bounding box: (x1: {bbox['x1']:.1f}, y1: {bbox['y1']:.1f}, "
-                f"x2: {bbox['x2']:.1f}, y2: {bbox['y2']:.1f}).\n"
-                f"Image dimensions: {img_size['img_w']}x{img_size['img_h']} pixels.\n"
+                f"Context: This is a vehicle cropped from a dashcam/traffic scene.\n"
+                f"Location: {position_desc} (x={center_x:.0f}/{img_size['img_w']}px = {rel_x*100:.0f}% from left)\n\n"
             )
         else:
-            crop_details = ""
+            crop_details = "Context: This is a vehicle cropped from a traffic scene.\n\n"
         # print(f"crop_details: {crop_details}")
 
         payload = {
             "model": "qwen2.5vl",
             "prompt": (
-                f"You are analyzing a cropped object from a traffic scene.\n\n"
-                f"Image Information:\n"
-                f"Original image size: {img_size['img_w']}x{img_size['img_h']} pixels\n"
-                f"{crop_details}\n"
-                f"{'='*40}\n"
-                f"Task: {prompt}\n"
-                f"{'='*40}\n\n"
-                f"Based on the cropped image and its position information, determine if this object meets the requirement.\n"
-                f"IMPORTANT: Pay careful attention to:\n"
-                f"1. The object's position in the scene (left/center/right)\n"
-                f"2. The object's appearance, characteristics, and color\n"
-                f"3. Whether all conditions in the task are satisfied\n\n"
-                f"Answer ONLY 'yes' or 'no' without any explanation."
+                f"{crop_details}"
+                f"Question: {prompt}\n\n"
+                f"Consider both the vehicle's appearance and its position. "
+                f"Note: A vehicle 'in the center or directly ahead' should NOT be considered as 'in the left'.\n\n"
+                f"Does this vehicle match the description? Answer 'yes' or 'no'."
             ),
             "images": [encode_image(f)],
         }
