@@ -213,5 +213,5 @@ __marimo__/
 tracking_output/*
 crops/*
 exps/*
-.vscode/
-tracking_viz/
+.vscode/*
+tracking_viz/*

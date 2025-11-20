@@ -3,8 +3,6 @@ import requests
 import base64
 import json
 import re
-import argparse
-import sys
 from PIL import Image
 import io
 
@@ -106,7 +104,7 @@ def select_targets(
                 # print(crop_item)
                 # print(f"file_path: {f}")
                 if (
-                   f.replace("/home/seanachan/ByteTrack_ultralytics/", "")
+                    f.replace("/home/seanachan/ByteTrack_ultralytics/", "")
                     == crop_item.crop_path
                 ):
                     crop = crop_item
@@ -118,10 +116,27 @@ def select_targets(
         # print(f"bbox: {bbox}")
 
         if bbox:
-            # Assume it's an object with attributes
+            # Calculate relative position and center
+            center_x = (bbox["x1"] + bbox["x2"]) / 2
+            center_y = (bbox["y1"] + bbox["y2"]) / 2
+            rel_x = center_x / img_size["img_w"]
+            rel_y = center_y / img_size["img_h"]
+
+            # Determine position in image
+            if rel_x < 0.33:
+                horizontal_pos = "left side"
+            elif rel_x < 0.67:
+                horizontal_pos = "center"
+            else:
+                horizontal_pos = "right side"
+
             crop_details = (
-                f"the position of this crop in the original image is (x1: {bbox['x1']}, y1: {bbox['y1']}, "
-                f"x2: {bbox['x2']}, y2: {bbox['y2']}). "
+                f"This cropped object is located at the {horizontal_pos} of the original image.\n"
+                f"Detailed position: Center at ({center_x:.1f}, {center_y:.1f}), "
+                f"relative position: {rel_x*100:.1f}% from left, {rel_y*100:.1f}% from top.\n"
+                f"Bounding box: (x1: {bbox['x1']:.1f}, y1: {bbox['y1']:.1f}, "
+                f"x2: {bbox['x2']:.1f}, y2: {bbox['y2']:.1f}).\n"
+                f"Image dimensions: {img_size['img_w']}x{img_size['img_h']} pixels.\n"
             )
         else:
             crop_details = ""
@@ -130,16 +145,19 @@ def select_targets(
         payload = {
             "model": "qwen2.5vl",
             "prompt": (
-                f"Don't show your thought process."
-                f"The size of the original image is height: {img_size['img_h']}, "
-                f"width: {img_size['img_w']}, "
-                f"{'='*20}\n"
-                f"I will attach a cropped image from this image to you"
-                f"{crop_details}\n\n"
-                f"{'='*20}\n"
-                f"{prompt}\n"
-                "Confirm whether it meets the requirement. "
-                "If yes, answer 'yes'. If not, answer 'no'."
+                f"You are analyzing a cropped object from a traffic scene.\n\n"
+                f"Image Information:\n"
+                f"Original image size: {img_size['img_w']}x{img_size['img_h']} pixels\n"
+                f"{crop_details}\n"
+                f"{'='*40}\n"
+                f"Task: {prompt}\n"
+                f"{'='*40}\n\n"
+                f"Based on the cropped image and its position information, determine if this object meets the requirement.\n"
+                f"IMPORTANT: Pay careful attention to:\n"
+                f"1. The object's position in the scene (left/center/right)\n"
+                f"2. The object's appearance, characteristics, and color\n"
+                f"3. Whether all conditions in the task are satisfied\n\n"
+                f"Answer ONLY 'yes' or 'no' without any explanation."
             ),
             "images": [encode_image(f)],
         }
@@ -171,66 +189,3 @@ def select_targets(
                 print(f"[RESULT] Target ID: {person_id} selected")
 
     return selected_ids
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--crops", type=str, required=True)
-    parser.add_argument("--prompt", type=str, required=True)
-    args = parser.parse_args()
-
-    def get_sorted_files(crops_dir):
-        return sorted(
-            [
-                os.path.abspath(os.path.join(crops_dir, f))
-                for f in os.listdir(crops_dir)
-                if os.path.isfile(os.path.join(crops_dir, f))
-                and (f.endswith(".jpg") or f.endswith(".png"))
-            ],
-            key=sort_key,
-        )
-
-    files = get_sorted_files(args.crops)
-    target_id = -1
-
-    for idx, f in enumerate(files, 1):
-        fname = os.path.basename(f)
-        person_id, frame_id = parse_filename(fname)
-        print(f"[INFO] ({idx}/{len(files)}) Processing {fname}")
-
-        payload = {
-            "model": "qwen2.5vl",
-            "prompt": (
-                f"{args.prompt}\n"
-                "Confirm whether it meets the requirements. "
-                "If yes, answer 'yes'. If not, answer 'no'."
-            ),
-            "images": [encode_image(f)],
-        }
-
-        try:
-            resp = requests.post(API_URL, json=payload, stream=True)
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"[ERROR] LLM request failed: {e}")
-            continue
-
-        result_text = ""
-        for line in resp.iter_lines():
-            if line:
-                try:
-                    data = json.loads(line.decode("utf-8"))
-                    if "response" in data:
-                        result_text += data["response"]
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-
-        print(f"[DEBUG] LLM response: {result_text.strip()}")
-
-        if "yes" in result_text.lower():
-            target_id = person_id
-            print(f"[RESULT] Target ID: {target_id}")
-            break
-
-    print(json.dumps({"target_id": target_id}, ensure_ascii=False))
-    sys.exit(0)
