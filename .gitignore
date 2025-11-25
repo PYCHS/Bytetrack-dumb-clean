@@ -215,3 +215,4 @@ crops/*
 exps/*
 .vscode/*
 tracking_viz/*
+video_gen_predict.py
