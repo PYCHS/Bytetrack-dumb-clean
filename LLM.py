@@ -55,7 +55,6 @@ def sort_key(x):
 def select_targets(
     crops_dir,
     prompt,
-    device="cpu",
     quiet=False,
     img_size={"img_h": 375, "img_w": 1242},
     crop_info=None,
@@ -66,7 +65,6 @@ def select_targets(
         crops_dir: Directory containing cropped images named as "i{track_id}_f{frame_id}.jpg"
         prompt: Text prompt for LLM target selection
         threshold: Similarity threshold (not used in LLM-based selection)
-        device: Device to use (cpu/cuda)
         quiet: Whether to suppress output
 
     Returns:
@@ -144,7 +142,7 @@ def select_targets(
             "prompt": (
                 f"{crop_details}"
                 f"Question: {prompt}\n\n"
-                f"Consider both the vehicle's appearance and its position. "
+                f"Consider both the {crop.get_class(crop.cls)}'s appearance and its position. "
                 f"Note: A vehicle 'in the center or directly ahead' should NOT be considered as 'in the left'.\n\n"
                 f"Does this vehicle match the description? Answer 'yes' or 'no'."
             ),
