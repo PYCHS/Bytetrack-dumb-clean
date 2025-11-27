@@ -8,7 +8,7 @@ import io
 
 API_URL = "http://localhost:11434/api/generate"
 
-# 【新增】定義需要進行方向性判斷的 Prompt 列表
+# [NEW] Define prompts that require directional judgment
 DIRECTIONAL_PROMPTS = [
     'cars-in-the-counter-direction-of-ours', 
     'cars-in-the-same-direction-of-ours'
@@ -38,7 +38,7 @@ def encode_image(path, min_size=224):
 
     # Convert to bytes
     buffer = io.BytesIO()
-    # 【修改】確保使用相同的格式，避免 LLM 處理錯誤
+    # [MODIFIED] Force consistent image format to avoid LLM processing errors
     img.save(buffer, format=img.format if img.format in ("PNG", "JPEG") else "JPEG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
@@ -94,7 +94,7 @@ def select_targets(
 
     selected_ids = [] 
 
-    # 【新增】判斷當前的 prompt 是否需要進行方向性判斷
+    # [NEW] Check whether the current prompt requires directional judgment
     p = prompt.lower()
     is_directional = any(x in p for x in DIRECTIONAL_PROMPTS)
 
@@ -120,29 +120,30 @@ def select_targets(
         if crop and hasattr(crop, "bbox"):
             bbox = crop.bbox
         # print(f"bbox: {bbox}")
-        # 提取物體類別 (用於提示詞)
+        # Extract object category (for prompt generation)
         object_type = "object" if crop is None else crop.get_class(crop.cls)
 
         # ----------------------------------------------------
-        # ? 【修改】根據是否為方向性問題，構建不同的 LLM 提示詞和規則
+        # [MODIFIED] Build different LLM prompts and rules
+        # depending on whether direction is involved
         # ----------------------------------------------------
         
         llm_prompt = ""
-        target_llm_answer = None # 【新增】預期 LLM 的回答 (TOWARDS/AWAY/yes)
+        target_llm_answer = None # [NEW] Expected LLM answer (TOWARDS / AWAY / YES)
 
         if is_directional:
-            # 針對 '同向'/'逆向' 問題
+            # For "same direction" / "opposite direction" classification
             
-            # 1. 設置目標答案
+            # 1. Set expected answer
             if prompt.lower() == 'cars-in-the-counter-direction-of-ours':
-                # 逆向/迎面而來 -> 車頭對著我們
+                # Opposite direction / facing towards camera
                 target_llm_answer = 'TOWARDS' 
             elif prompt.lower() == 'cars-in-the-same-direction-of-ours':
-                # 同向/背向我們 -> 車尾對著我們
+                # Same direction / facing away from camera
                 target_llm_answer = 'AWAY'    
 
-            # 2. 構建 LLM 提示詞 (只問面向)
-            # 【新增】這是專門用於判斷車輛面向的 Prompt
+            # 2. Construct LLM prompt (only asking orientation)
+            # [NEW] Specialized prompt for car orientation
             llm_prompt = (
                 f"Context: This is a crop of a {object_type} (Tracking ID: {person_id}) from a dashcam/traffic scene.\n\n"
                 "You are performing a strict pose classification.\n"
@@ -160,19 +161,17 @@ def select_targets(
             )
             
         else:
-            # 針對一般分類問題 (保留原邏輯)
-            
-            # 1. 設置目標答案
-            target_llm_answer = 'YES' 
-            
-            # 2. 構建 LLM 提示詞 (保留原邏輯，包含位置描述)
+            # For general classification problems (keep original logic)
+
+            target_llm_answer = 'YES'
+
             if bbox:
-                # 計算相對位置 (保留原邏輯)
+                # Compute relative position
                 center_x = (bbox["x1"] + bbox["x2"]) / 2
                 center_y = (bbox["y1"] + bbox["y2"]) / 2
                 rel_x = center_x / img_size["img_w"]  # 0.0 = leftmost, 1.0 = rightmost
 
-                # Determine horizontal position - be more strict about "left"
+                # Determine horizontal position
                 if rel_x < 0.35:
                     position_desc = "on the left side of the road"
                 elif rel_x > 0.65:
@@ -188,11 +187,11 @@ def select_targets(
                 crop_details = (
                     f"Context: This is a {object_type} cropped from a traffic scene.\n\n"
                 )
-                
+
             llm_prompt = (
                 f"{crop_details}"
                 "You are performing a strict binary classification.\n"
-                f"Your task: Determine whether {object_type} meets the condition described in the prompt .\n\n"
+                f"Your task: Determine whether {object_type} meets the condition described in the prompt.\n\n"
                 "Rules:\n"
                 "- IGNORE blur, lighting, noise, image quality, and unclear appearance.\n"
                 "- ONLY consider the object's HORIZONTAL POSITION (x-axis) based on the provided location description.\n"
@@ -203,13 +202,14 @@ def select_targets(
                 "Answer format:\n"
                 "yes or no\n"
             )
+
         # ----------------------------------------------------
-        # 3. LLM API 呼叫 (保留原邏輯)
+        # 3. LLM API Call (original logic preserved)
         # ----------------------------------------------------
         payload = {
             "model": "qwen2.5vl",
-            "prompt": llm_prompt,          # <-- 直接用上面組好的 llm_prompt
-            "images": [encode_image(f)],   # 圖片一樣丟進去
+            "prompt": llm_prompt,
+            "images": [encode_image(f)],
         }
 
         try:
@@ -221,7 +221,7 @@ def select_targets(
             continue
 
         result_text = ""
-        
+
         for line in resp.iter_lines():
             if line:
                 try:
@@ -230,24 +230,26 @@ def select_targets(
                         result_text += data["response"]
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
+
         if not quiet:
             print(f"[DEBUG] LLM response: {result_text.strip()}")
 
         # ----------------------------------------------------
-        # 4. 【修改】目標選取判斷 (根據新的邏輯修改此處)
+        # 4. [MODIFIED] Selection logic based on new rules
         # ----------------------------------------------------
-        
-        # 清理並大寫 LLM 回應，以利判斷
+
+        # Clean and uppercase the LLM response for reliable comparison
         clean_response = result_text.strip().upper()
         is_selected = False
-        
+
         if is_directional:
-            # 【新增邏輯】方向性問題：檢查 LLM 回應是否符合預期的面向 (TOWARDS/AWAY)
-            # 例如: 如果 prompt 是 'counter-direction'，target_llm_answer 是 'TOWARDS'
+            # [NEW LOGIC] For directional prompts:
+            # Check if the response matches the expected orientation (TOWARDS / AWAY)
             if target_llm_answer and clean_response.startswith(target_llm_answer):
                 is_selected = True
         else:
-            # 【保留原邏輯】一般分類問題：檢查 LLM 回應是否包含 'YES'
+            # [ORIGINAL LOGIC] For general classification:
+            # Check if response contains "YES"
             if 'YES' in clean_response:
                 is_selected = True
 
