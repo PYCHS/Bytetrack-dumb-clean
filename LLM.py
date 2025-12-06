@@ -13,6 +13,18 @@ DIRECTIONAL_PROMPTS = [
     'cars-in-the-counter-direction-of-ours', 
     'cars-in-the-same-direction-of-ours'
 ]
+# Mapping from prompt keywords/full prompts to the expected LLM answer.
+# Keys should be lowercase. Use both full prompt strings and shorter keyword
+# variants to allow flexible matching (substring or exact).
+DIRECTION_MAP = {
+    'cars-in-the-counter-direction-of-ours': 'TOWARDS',
+    'cars-in-the-same-direction-of-ours': 'AWAY',
+    # shorter keywords to match variants in user-provided prompts
+    'counter-direction': 'TOWARDS',
+    'same-direction': 'AWAY',
+    'counter': 'TOWARDS',
+    'same': 'AWAY',
+}
 
 def encode_image(path, min_size=224):
     """Encode image to base64, resizing if too small for vision model.
@@ -95,8 +107,27 @@ def select_targets(
     selected_ids = [] 
 
     # [NEW] Check whether the current prompt requires directional judgment
+    # and determine the expected LLM answer using `DIRECTION_MAP`.
     p = prompt.lower()
     is_directional = any(x in p for x in DIRECTIONAL_PROMPTS)
+
+    # Determine the expected target answer for directional prompts by
+    # checking for known keywords or exact prompt matches. This avoids the
+    # previous bug where substring detection and exact matching disagreed.
+    target_llm_answer = None
+    if is_directional:
+        # First try to find a direct mapping using any key present in the
+        # prompt (flexible substring match).
+        for key, val in DIRECTION_MAP.items():
+            if key in p:
+                target_llm_answer = val
+                break
+        # If still not found, try exact matches with the canonical prompts.
+        if target_llm_answer is None:
+            for canonical in DIRECTIONAL_PROMPTS:
+                if p.strip() == canonical:
+                    target_llm_answer = DIRECTION_MAP.get(canonical)
+                    break
 
 
     for idx, f in enumerate(files, 1):
@@ -132,28 +163,19 @@ def select_targets(
         target_llm_answer = None # [NEW] Expected LLM answer (TOWARDS / AWAY / YES)
 
         if is_directional:
-            # For "same direction" / "opposite direction" classification
-            
-            # 1. Set expected answer
-            if prompt.lower() == 'cars-in-the-counter-direction-of-ours':
-                # Opposite direction / facing towards camera
-                target_llm_answer = 'TOWARDS' 
-            elif prompt.lower() == 'cars-in-the-same-direction-of-ours':
-                # Same direction / facing away from camera
-                target_llm_answer = 'AWAY'    
-
             # 2. Construct LLM prompt (only asking orientation)
-            # [NEW] Specialized prompt for car orientation
+            # Specialized prompt for car orientation. The LLM is instructed
+            # to only return one of three tokens: TOWARDS / AWAY / UNCLEAR.
             llm_prompt = (
                 f"Context: This is a crop of a {object_type} (Tracking ID: {person_id}) from a dashcam/traffic scene.\n\n"
                 "You are performing a strict pose classification.\n"
                 "Your task: Determine the object's facing direction.\n\n"
                 "Rules:\n"
                 "- IGNORE blur, lighting, noise, image quality, and unclear appearance.\n"
-                "- ONLY consider the object's **FACING DIRECTION** (車頭或車尾) based on the image.\n"
+                "- ONLY consider the object's FACING DIRECTION (front/head or back/rear) based on the image.\n"
                 "- You MUST answer EXACTLY one of the following: 'TOWARDS', 'AWAY', or 'UNCLEAR'.\n"
-                "- 'TOWARDS' means the car front/headlights are visible (迎面而來/逆向).\n"
-                "- 'AWAY' means the car back/taillights are visible (背向我們/同向).\n"
+                "- 'TOWARDS' means the car front/headlights are visible (approaching/opposite direction).\n"
+                "- 'AWAY' means the car back/taillights are visible (moving away/same direction).\n"
                 "- 'UNCLEAR' if it's side-view, too blurry, or not a car.\n"
                 f"Question: Is this {object_type} facing TOWARDS or AWAY from the camera?\n\n"
                 "Answer format:\n"
@@ -243,14 +265,27 @@ def select_targets(
         is_selected = False
 
         if is_directional:
-            # [NEW LOGIC] For directional prompts:
-            # Check if the response matches the expected orientation (TOWARDS / AWAY)
-            if target_llm_answer and clean_response.startswith(target_llm_answer):
-                is_selected = True
+            # [NEW LOGIC] For directional prompts: use word-boundary regex to
+            # reliably detect tokens like 'TOWARDS', 'AWAY', or 'UNCLEAR'.
+            # This is more robust than startswith and tolerates short
+            # explanatory text from the LLM.
+            if target_llm_answer:
+                pattern = r"\b" + re.escape(target_llm_answer) + r"\b"
+                if re.search(pattern, clean_response):
+                    is_selected = True
+            else:
+                # Fallback: if no explicit mapping was found earlier,
+                # attempt to infer selection from common keywords in the
+                # prompt and the presence of TOWARDS/AWAY in the response.
+                if 'counter' in p and re.search(r"\bTOWARDS\b", clean_response):
+                    is_selected = True
+                elif ('same' in p or 'same-direction' in p) and re.search(r"\bAWAY\b", clean_response):
+                    is_selected = True
+                # If UNCLEAR or no relevant token found, do not select.
         else:
-            # [ORIGINAL LOGIC] For general classification:
-            # Check if response contains "YES"
-            if 'YES' in clean_response:
+            # [ORIGINAL LOGIC] For general classification: use word-boundary
+            # matching for 'YES' to avoid accidental substring matches.
+            if re.search(r"\bYES\b", clean_response):
                 is_selected = True
 
         if is_selected:
