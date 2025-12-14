@@ -8,23 +8,21 @@ import io
 
 API_URL = "http://localhost:11434/api/generate"
 
-# [NEW] Define prompts that require directional judgment
-DIRECTIONAL_PROMPTS = [
-    'cars-in-the-counter-direction-of-ours', 
-    'cars-in-the-same-direction-of-ours'
-]
-# Mapping from prompt keywords/full prompts to the expected LLM answer.
-# Keys should be lowercase. Use both full prompt strings and shorter keyword
-# variants to allow flexible matching (substring or exact).
-DIRECTION_MAP = {
-    'cars-in-the-counter-direction-of-ours': 'TOWARDS',
-    'cars-in-the-same-direction-of-ours': 'AWAY',
-    # shorter keywords to match variants in user-provided prompts
-    'counter-direction': 'TOWARDS',
-    'same-direction': 'AWAY',
-    'counter': 'TOWARDS',
-    'same': 'AWAY',
+# Dictionary mapping keywords to physical orientation
+# TOWARDS = Front view (headlights)
+# AWAY = Rear view (taillights)
+# instead of hard code the entire prompt
+DIRECTION_KEYWORDS = {
+    "cars-in-the-counter-direction-of-ours": "TOWARDS",
+    "cars-in-the-same-direction-of-ours": "AWAY",
+    "counter direction": "TOWARDS",
+    "opposite": "TOWARDS",
+    "oncoming": "TOWARDS",
+    "same direction": "AWAY",
+    "with us": "AWAY",
+    "along our way": "AWAY",
 }
+
 
 def encode_image(path, min_size=224):
     """Encode image to base64, resizing if too small for vision model.
@@ -106,28 +104,28 @@ def select_targets(
 
     selected_ids = [] 
 
-    # [NEW] Check whether the current prompt requires directional judgment
-    # and determine the expected LLM answer using `DIRECTION_MAP`.
-    p = prompt.lower()
-    is_directional = any(x in p for x in DIRECTIONAL_PROMPTS)
-
-    # Determine the expected target answer for directional prompts by
-    # checking for known keywords or exact prompt matches. This avoids the
-    # previous bug where substring detection and exact matching disagreed.
-    target_llm_answer = None
-    if is_directional:
-        # First try to find a direct mapping using any key present in the
-        # prompt (flexible substring match).
-        for key, val in DIRECTION_MAP.items():
-            if key in p:
-                target_llm_answer = val
-                break
-        # If still not found, try exact matches with the canonical prompts.
-        if target_llm_answer is None:
-            for canonical in DIRECTIONAL_PROMPTS:
-                if p.strip() == canonical:
-                    target_llm_answer = DIRECTION_MAP.get(canonical)
-                    break
+    # ----------------------------------------------------
+    # 1. Analyze Prompt for Directionality
+    # ----------------------------------------------------
+    # Instead of creating a separate logic path, we generate a "Direction Hint"
+    # that will be appended to the general prompt.
+    prompt_lower = prompt.lower()
+    direction_hint = ""
+    for key, val in DIRECTION_KEYWORDS.items():
+        if key in prompt_lower:
+            if val == "TOWARDS":
+                direction_hint = (
+                    "IMPORTANT: The user is asking for 'ONCOMING/OPPOSITE' direction. "
+                    "You MUST check if the vehicle's FRONT (headlights/grille) is visible. "
+                    "If you see the rear/taillights, it is NOT a match."
+                )
+            elif val == "AWAY":
+                direction_hint = (
+                    "IMPORTANT: The user is asking for 'SAME DIRECTION/AWAY'. "
+                    "You MUST check if the vehicle's REAR (taillights) is visible. "
+                    "If you see the front/headlights, it is NOT a match."
+                )
+            break
 
 
     for idx, f in enumerate(files, 1):
@@ -137,162 +135,127 @@ def select_targets(
         if not quiet:
             print(f"[INFO] ({idx}/{len(files)}) Processing {fname}")
 
+        # ----------------------------------------------------
+        # 2. Extract Metadata (BBox, Class)
+        # ----------------------------------------------------
         crop = None
         bbox = None
+        
+        # Match current file with crop_info data
         if crop_info:
-            print(crop_info)
             for crop_item in crop_info:
-                file_name = os.path.basename(f)
-                crop_name = os.path.basename(crop_item.crop_path)
-
-                if file_name == crop_name:
+                # Assuming crop_path ends with the filename
+                if os.path.basename(crop_item.crop_path) == fname:
                     crop = crop_item
                     break
+        
         if crop and hasattr(crop, "bbox"):
             bbox = crop.bbox
-        # print(f"bbox: {bbox}")
-        # Extract object category (for prompt generation)
+
         object_type = "object" if crop is None else crop.get_class(crop.cls)
 
         # ----------------------------------------------------
-        # [MODIFIED] Build different LLM prompts and rules
-        # depending on whether direction is involved
+        # 3. Calculate Spatial Position (Always)
         # ----------------------------------------------------
-        
-        llm_prompt = ""
-        target_llm_answer = None # [NEW] Expected LLM answer (TOWARDS / AWAY / YES)
+        position_desc = "unknown location"
+        if bbox:
+            center_x = (bbox["x1"] + bbox["x2"]) / 2
+            rel_x = center_x / img_size["img_w"]  # 0.0 = left, 1.0 = right
 
-        if is_directional:
-            # 2. Construct LLM prompt (only asking orientation)
-            # Specialized prompt for car orientation. The LLM is instructed
-            # to only return one of three tokens: TOWARDS / AWAY / UNCLEAR.
-            llm_prompt = (
-                f"Context: This is a crop of a {object_type} (Tracking ID: {person_id}) from a dashcam/traffic scene.\n\n"
-                "You are performing a strict pose classification.\n"
-                "Your task: Determine the object's facing direction.\n\n"
-                "Rules:\n"
-                "- IGNORE blur, lighting, noise, image quality, and unclear appearance.\n"
-                "- ONLY consider the object's FACING DIRECTION (front/head or back/rear) based on the image.\n"
-                "- You MUST answer EXACTLY one of the following: 'TOWARDS', 'AWAY', or 'UNCLEAR'.\n"
-                "- 'TOWARDS' means the car front/headlights are visible (approaching/opposite direction).\n"
-                "- 'AWAY' means the car back/taillights are visible (moving away/same direction).\n"
-                "- 'UNCLEAR' if it's side-view, too blurry, or not a car.\n"
-                f"Question: Is this {object_type} facing TOWARDS or AWAY from the camera?\n\n"
-                "Answer format:\n"
-                "TOWARDS, AWAY, or UNCLEAR\n"
-            )
-            
-        else:
-            # For general classification problems (keep original logic)
-
-            target_llm_answer = 'YES'
-
-            if bbox:
-                # Compute relative position
-                center_x = (bbox["x1"] + bbox["x2"]) / 2
-                center_y = (bbox["y1"] + bbox["y2"]) / 2
-                rel_x = center_x / img_size["img_w"]  # 0.0 = leftmost, 1.0 = rightmost
-
-                # Determine horizontal position
-                if rel_x < 0.35:
-                    position_desc = "on the left side of the road"
-                elif rel_x > 0.65:
-                    position_desc = "on the right side of the road"
-                else:
-                    position_desc = "in the center or directly ahead"
-
-                crop_details = (
-                    f"Context: This is a {object_type} cropped from a dashcam/traffic scene.\n"
-                    f"Location: {position_desc} (x={center_x:.0f}/{img_size['img_w']}px = {rel_x*100:.0f}% from left)\n\n"
-                )
+            if rel_x < 0.35:
+                position_desc = "on the left side of the road"
+            elif rel_x > 0.65:
+                position_desc = "on the right side of the road"
             else:
-                crop_details = (
-                    f"Context: This is a {object_type} cropped from a traffic scene.\n\n"
-                )
+                position_desc = "in the center/ahead"
+            
+            # Add spatial context string
+            location_context = f"Location: {position_desc} (Horizontal Position: {rel_x*100:.0f}%)"
+        else:
+            location_context = ""
+        ##########
+        # ----------------------------------------------------
+        # 4. Construct Unified LLM Prompt
+        # ----------------------------------------------------
+        # We combine Object Type + Location + Direction Hint + User Prompt
+        # into a single classification task.
+        
+        encoded_img = encode_image(f)
+        if not encoded_img:
+            continue
 
-            llm_prompt = (
-                f"{crop_details}"
-                "You are performing a strict binary classification.\n"
-                f"Your task: Determine whether {object_type} meets the condition described in the prompt.\n\n"
-                "Rules:\n"
-                "- IGNORE blur, lighting, noise, image quality, and unclear appearance.\n"
-                "- ONLY consider the object's HORIZONTAL POSITION (x-axis) based on the provided location description.\n"
-                "- Do NOT judge based on identity or appearance.\n"
-                "- Do NOT say the image is blurry.\n"
-                "- You MUST answer EXACTLY one of the following: 'yes' or 'no'.\n"
-                f"Question: {prompt}\n\n"
-                "Answer format:\n"
-                "yes or no\n"
-            )
+        llm_prompt = (
+            f"Context: This is a crop of a {object_type} from a dashcam view.\n"
+            f"{location_context}\n\n"
+            f"User Prompt: \"{prompt}\"\n\n"
+            f"Task: Analyze the image and determine if it strictly matches the User Prompt.\n\n"
+            f"Rules:\n"
+            f"1. IGNORE low resolution or blur. Focus on visible features.\n"
+            f"2. {direction_hint}\n"  # Insert specific direction rules if needed
+            f"3. If the User Prompt specifies color or vehicle type, check those too.\n"
+            f"4. Provide your answer in JSON format.\n\n"
+            f"Output Format:\n"
+            f"{{\"match\": true, \"reason\": \"short explanation\"}}\n"
+            f"OR\n"
+            f"{{\"match\": false, \"reason\": \"short explanation\"}}"
+        )
 
         # ----------------------------------------------------
-        # 3. LLM API Call (original logic preserved)
+        # 5. Call LLM API
         # ----------------------------------------------------
         payload = {
             "model": "qwen2.5vl",
             "prompt": llm_prompt,
-            "images": [encode_image(f)],
+            "images": [encoded_img],
+            "temperature": 0.1, # Low temperature for consistent classification
         }
 
         try:
-            resp = requests.post(API_URL, json=payload, stream=True)
+            resp = requests.post(API_URL, json=payload, stream=False) # stream=False usually easier for JSON
             resp.raise_for_status()
+            
+            # Handle response (Qwen API format might vary, assuming standard structure)
+            # If streaming is off, we usually get the full response body
+            # Adjust depending on your specific Ollama/LocalAI version behavior
+            response_data = resp.json()
+            result_text = response_data.get("response", "")
+
         except Exception as e:
             if not quiet:
                 print(f"[ERROR] LLM request failed: {e}")
             continue
 
-        result_text = ""
-
-        for line in resp.iter_lines():
-            if line:
-                try:
-                    data = json.loads(line.decode("utf-8"))
-                    if "response" in data:
-                        result_text += data["response"]
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-
         if not quiet:
-            print(f"[DEBUG] LLM response: {result_text.strip()}")
+            print(f"[DEBUG] LLM raw response: {result_text.strip()}")
 
         # ----------------------------------------------------
-        # 4. [MODIFIED] Selection logic based on new rules
+        # 6. Parse Result
         # ----------------------------------------------------
-
-        # Clean and uppercase the LLM response for reliable comparison
-        clean_response = result_text.strip().upper()
         is_selected = False
-
-        if is_directional:
-            # [NEW LOGIC] For directional prompts: use word-boundary regex to
-            # reliably detect tokens like 'TOWARDS', 'AWAY', or 'UNCLEAR'.
-            # This is more robust than startswith and tolerates short
-            # explanatory text from the LLM.
-            if target_llm_answer:
-                pattern = r"\b" + re.escape(target_llm_answer) + r"\b"
-                if re.search(pattern, clean_response):
+        
+        # Robust parsing for JSON boolean
+        try:
+            # Try to find JSON structure even if wrapped in markdown
+            json_match = re.search(r"\{.*\}", result_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                data = json.loads(json_str)
+                if data.get("match") is True:
                     is_selected = True
             else:
-                # Fallback: if no explicit mapping was found earlier,
-                # attempt to infer selection from common keywords in the
-                # prompt and the presence of TOWARDS/AWAY in the response.
-                if 'counter' in p and re.search(r"\bTOWARDS\b", clean_response):
+                # Fallback: simple keyword search if JSON parsing fails
+                if "true" in result_text.lower() and "match" in result_text.lower():
                     is_selected = True
-                elif ('same' in p or 'same-direction' in p) and re.search(r"\bAWAY\b", clean_response):
-                    is_selected = True
-                # If UNCLEAR or no relevant token found, do not select.
-        else:
-            # [ORIGINAL LOGIC] For general classification: use word-boundary
-            # matching for 'YES' to avoid accidental substring matches.
-            if re.search(r"\bYES\b", clean_response):
+        except Exception:
+            # Last resort fallback
+            if "true" in result_text.lower():
                 is_selected = True
 
         if is_selected:
             selected_ids.append(person_id)
             if not quiet:
-                print(f"[RESULT] Target ID: {person_id} selected (LLM Answer: {clean_response})")
+                print(f"[RESULT] Target ID: {person_id} SELECTED")
         elif not quiet:
-            print(f"[RESULT] Track ID {person_id} skipped (LLM Answer: {clean_response})")
+            print(f"[RESULT] Target ID: {person_id} Skipped")
 
     return selected_ids
